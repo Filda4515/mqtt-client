@@ -23,6 +23,8 @@ public class SoilMoistureMQTTClient {
     private HumiditySensor humiditySensor;
     private IrrigationSystem irrigationSystem;
 
+    private Timer irrigationTimer;
+
     /**
      * Vytvori instacni tridy MQTT klienta pro mereni vhlkosti pudy a rizeni
      * zavlazovaciho systemu
@@ -33,10 +35,6 @@ public class SoilMoistureMQTTClient {
     public SoilMoistureMQTTClient(HumiditySensor sensor, IrrigationSystem irrigation) {
         this.humiditySensor = sensor;
         this.irrigationSystem = irrigation;
-    }
-
-    public void messageArrived(String topic, MqttMessage message) throws Exception {
-        
     }
 
     /**
@@ -57,8 +55,57 @@ public class SoilMoistureMQTTClient {
                     if (msg.equals(Config.REQUEST_GET_HUMIDITY)) {
                         float humidity = humiditySensor.readRAWValue();
                         String humidityMessage = Config.RESPONSE_HUMIDITY + ";" + humidity;
-
                         client.publish(Config.TOPIC_OUT, new MqttMessage(humidityMessage.getBytes()));
+                    } else if (msg.equals(Config.REQUEST_GET_STATUS)) {
+                        String irrigationStatus = irrigationSystem.isActive() ? "irrigation_on" : "irrigation_off";
+                        String statusMessage = Config.RESPONSE_STATUS + ";" + irrigationStatus;
+                        client.publish(Config.TOPIC_OUT, new MqttMessage(statusMessage.getBytes()));
+                    } else if (msg.equals(Config.REQUEST_START_IRRIGATION)) {
+                        if (!irrigationSystem.isActive()) {
+                            irrigationSystem.activate();
+                            if (irrigationSystem.hasFault()) {
+                                String faultMessage = "fault;IRRIGATION_SYSTEM";
+                                client.publish(Config.TOPIC_OUT, new MqttMessage(faultMessage.getBytes()));
+                                return;
+                            }
+                            String irrigationOnMessage = "status;irrigation_on";
+                            client.publish(Config.TOPIC_OUT, new MqttMessage(irrigationOnMessage.getBytes()));
+
+                            if (irrigationTimer != null) {
+                                irrigationTimer.cancel();
+                            }
+                            irrigationTimer = new Timer();
+                            irrigationTimer.schedule(new TimerTask() {
+                                @Override
+                                public void run() {
+                                    try {
+                                        irrigationSystem.deactivate();
+                                        if (irrigationSystem.hasFault()) {
+                                            String faultMessage = "fault;IRRIGATION_SYSTEM";
+                                            client.publish(Config.TOPIC_OUT, new MqttMessage(faultMessage.getBytes()));
+                                            return;
+                                        }
+                                        String irrigationOnMessage = "status;irrigation_off";
+                                        client.publish(Config.TOPIC_OUT, new MqttMessage(irrigationOnMessage.getBytes()));
+                                    } catch (MqttException e) {
+                                        e.printStackTrace();
+                                    }
+                                }
+                            }, 30000);
+                        }
+                    } else if (msg.equals(Config.REQUEST_STOP_IRRIGATION)) {
+                        irrigationSystem.deactivate();
+                        if (irrigationSystem.hasFault()) {
+                            String faultMessage = "fault;IRRIGATION_SYSTEM";
+                            client.publish(Config.TOPIC_OUT, new MqttMessage(faultMessage.getBytes()));
+                            return;
+                        }
+                        String irrigationOffMessage = "status;irrigation_off";
+                        client.publish(Config.TOPIC_OUT, new MqttMessage(irrigationOffMessage.getBytes()));
+
+                        if (irrigationTimer != null) {
+                            irrigationTimer.cancel();
+                        }
                     }
                 }
                 
@@ -76,6 +123,11 @@ public class SoilMoistureMQTTClient {
                 public void run() {
                     try {
                         float humidity = humiditySensor.readRAWValue();
+                        if (humiditySensor.hasFault()) {
+                            String faultMessage = "fault;HUMIDITY_SENSOR";
+                            client.publish(Config.TOPIC_OUT, new MqttMessage(faultMessage.getBytes()));
+                            return;
+                        }
                         String humidityMessage = Config.RESPONSE_HUMIDITY + ";" + humidity;
 
                         client.publish(Config.TOPIC_OUT, new MqttMessage(humidityMessage.getBytes()));
@@ -88,5 +140,4 @@ public class SoilMoistureMQTTClient {
             e.printStackTrace();
         }
     }
-
 }
